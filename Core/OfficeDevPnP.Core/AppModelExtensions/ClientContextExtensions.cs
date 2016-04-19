@@ -9,6 +9,10 @@ namespace Microsoft.SharePoint.Client
 {
     public static partial class ClientContextExtensions
     {
+        private static string PnPCoreVersion;
+        private static readonly object PnPCoreVersionLock = new object();
+
+
         /// <summary>
         /// Clones a ClientContext object while "taking over" the security context of the existing ClientContext instance
         /// </summary>
@@ -25,6 +29,7 @@ namespace Microsoft.SharePoint.Client
             return clientContext.Clone(new Uri(siteUrl));
         }
 
+
         /// <summary>
         /// 
         /// </summary>
@@ -38,6 +43,13 @@ namespace Microsoft.SharePoint.Client
 
         private static void ExecuteQueryImplementation(ClientRuntimeContext clientContext, int retryCount = 10, int delay = 500)
         {
+
+            if (clientContext is PnPClientContext)
+            {
+                retryCount = (clientContext as PnPClientContext).RetryCount;
+                delay = (clientContext as PnPClientContext).Delay;
+            }
+
             int retryAttempts = 0;
             int backoffInterval = delay;
             if (retryCount <= 0)
@@ -51,6 +63,11 @@ namespace Microsoft.SharePoint.Client
             {
                 try
                 {
+                    // If the customer is not using the clienttag then fill with the PnP Core library tag
+                    if (String.IsNullOrEmpty(clientContext.ClientTag))
+                    {
+                        clientContext.ClientTag = GetCoreVersionTag();
+                    }
                     clientContext.ExecuteQuery();
                     return;
 
@@ -108,7 +125,7 @@ namespace Microsoft.SharePoint.Client
                 clonedClientContext.FormDigestHandlingEnabled = (clientContext as ClientContext).FormDigestHandlingEnabled;
 
                 // In case of app only or SAML
-                clonedClientContext.ExecutingWebRequest += delegate(object oSender, WebRequestEventArgs webRequestEventArgs)
+                clonedClientContext.ExecutingWebRequest += delegate (object oSender, WebRequestEventArgs webRequestEventArgs)
                 {
                     // Call the ExecutingWebRequest delegate method from the original ClientContext object, but pass along the webRequestEventArgs of 
                     // the new delegate method
@@ -153,6 +170,50 @@ namespace Microsoft.SharePoint.Client
             {
 
             }
+        }
+
+        /// <summary>
+        /// Checks the server library version of the context for a minimally required version
+        /// </summary>
+        /// <param name="clientContext"></param>
+        /// <param name="minimallyRequiredVersion"></param>
+        /// <returns></returns>
+        public static bool HasMinimalServerLibraryVersion(this ClientRuntimeContext clientContext, string minimallyRequiredVersion)
+        {
+            return HasMinimalServerLibraryVersion(clientContext, new Version(minimallyRequiredVersion));
+        }
+
+        public static bool HasMinimalServerLibraryVersion(this ClientRuntimeContext clientContext, Version minimallyRequiredVersion)
+        {
+            bool hasMinimalVersion = false;
+            try
+            {
+                hasMinimalVersion = clientContext.ServerLibraryVersion.CompareTo(minimallyRequiredVersion) >= 0;
+            }
+            catch (PropertyOrFieldNotInitializedException)
+            {
+                // swallow the exception.
+            }
+            return hasMinimalVersion;
+        }
+
+        /// <summary>
+        /// Get's a tag that identifies the PnP Core library
+        /// </summary>
+        /// <returns>PnP Core library identification tag</returns>
+        private static string GetCoreVersionTag()
+        {
+            if (String.IsNullOrEmpty(PnPCoreVersion))
+            {
+                Assembly coreAssembly = Assembly.GetExecutingAssembly();
+                lock (PnPCoreVersionLock)
+                {
+                    PnPCoreVersion = String.Format("{0}:{1}", ((AssemblyTitleAttribute)coreAssembly.GetCustomAttribute(typeof(AssemblyTitleAttribute))).Title, 
+                                                             ((AssemblyFileVersionAttribute)coreAssembly.GetCustomAttribute(typeof(AssemblyFileVersionAttribute))).Version);
+                }
+            }
+
+            return PnPCoreVersion;
         }
 
     }

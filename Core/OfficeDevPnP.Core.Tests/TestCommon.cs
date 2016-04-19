@@ -7,12 +7,16 @@ using System.Security;
 using System.Text;
 using System.Threading.Tasks;
 using System.Net;
+using System.Data.SqlClient;
+using System.Data;
+using System.Threading;
 
-namespace OfficeDevPnP.Core.Tests {
+namespace OfficeDevPnP.Core.Tests
+{
     static class TestCommon
     {
         #region Constructor
-        static TestCommon() 
+        static TestCommon()
         {
             // Read configuration data
             TenantUrl = ConfigurationManager.AppSettings["SPOTenantUrl"];
@@ -29,7 +33,7 @@ namespace OfficeDevPnP.Core.Tests {
             }
             else
             {
-                if (!String.IsNullOrEmpty(ConfigurationManager.AppSettings["SPOUserName"]) && 
+                if (!String.IsNullOrEmpty(ConfigurationManager.AppSettings["SPOUserName"]) &&
                     !String.IsNullOrEmpty(ConfigurationManager.AppSettings["SPOPassword"]))
                 {
                     UserName = ConfigurationManager.AppSettings["SPOUserName"];
@@ -45,11 +49,9 @@ namespace OfficeDevPnP.Core.Tests {
                     Password = GetSecureString(ConfigurationManager.AppSettings["OnPremPassword"]);
                     Credentials = new NetworkCredential(ConfigurationManager.AppSettings["OnPremUserName"], Password, ConfigurationManager.AppSettings["OnPremDomain"]);
                 }
-                else if (!String.IsNullOrEmpty(ConfigurationManager.AppSettings["Realm"]) &&
-                         !String.IsNullOrEmpty(ConfigurationManager.AppSettings["AppId"]) &&
+                else if (!String.IsNullOrEmpty(ConfigurationManager.AppSettings["AppId"]) &&
                          !String.IsNullOrEmpty(ConfigurationManager.AppSettings["AppSecret"]))
                 {
-                    Realm = ConfigurationManager.AppSettings["Realm"];
                     AppId = ConfigurationManager.AppSettings["AppId"];
                     AppSecret = ConfigurationManager.AppSettings["AppSecret"];
                 }
@@ -67,7 +69,6 @@ namespace OfficeDevPnP.Core.Tests {
         static string UserName { get; set; }
         static SecureString Password { get; set; }
         public static ICredentials Credentials { get; set; }
-        static string Realm { get; set; }
         static string AppId { get; set; }
         static string AppSecret { get; set; }
 
@@ -78,21 +79,49 @@ namespace OfficeDevPnP.Core.Tests {
                 return ConfigurationManager.AppSettings["AzureStorageKey"];
             }
         }
+        public static String TestAutomationDatabaseConnectionString
+        {
+            get
+            {
+                return ConfigurationManager.AppSettings["TestAutomationDatabaseConnectionString"];
+            }
+        }
         #endregion
 
         #region Methods
-        public static ClientContext CreateClientContext() {
+        public static ClientContext CreateClientContext()
+        {
             return CreateContext(DevSiteUrl, Credentials);
         }
 
-        public static ClientContext CreateTenantClientContext() {
+        public static ClientContext CreateTenantClientContext()
+        {
             return CreateContext(TenantUrl, Credentials);
         }
 
+        public static PnPClientContext CreatePnPClientContext(int retryCount = 10, int delay = 500)
+        {
+            PnPClientContext context;
+            if (!String.IsNullOrEmpty(AppId) && !String.IsNullOrEmpty(AppSecret))
+            {
+                AuthenticationManager am = new AuthenticationManager();
+                var clientContext = am.GetAppOnlyAuthenticatedContext(DevSiteUrl, AppId, AppSecret);
+                context = PnPClientContext.ConvertFrom(clientContext, retryCount, delay);
+            }
+            else
+            {
+                context = new PnPClientContext(DevSiteUrl, retryCount, delay);
+                context.Credentials = Credentials;
+            }
+
+            context.RequestTimeout = Timeout.Infinite;
+            return context;
+        }
+
+
         public static bool AppOnlyTesting()
         {
-            if (!String.IsNullOrEmpty(ConfigurationManager.AppSettings["Realm"]) &&
-                !String.IsNullOrEmpty(ConfigurationManager.AppSettings["AppId"]) &&
+            if (!String.IsNullOrEmpty(ConfigurationManager.AppSettings["AppId"]) &&
                 !String.IsNullOrEmpty(ConfigurationManager.AppSettings["AppSecret"]) &&
                 String.IsNullOrEmpty(ConfigurationManager.AppSettings["SPOCredentialManagerLabel"]) &&
                 String.IsNullOrEmpty(ConfigurationManager.AppSettings["SPOUserName"]) &&
@@ -109,19 +138,44 @@ namespace OfficeDevPnP.Core.Tests {
             }
         }
 
+        public static bool TestAutomationSQLDatabaseAvailable()
+        {
+            string connectionString = TestAutomationDatabaseConnectionString;
+            if (!String.IsNullOrEmpty(connectionString))
+            {
+                try
+                {
+                    var con = new SqlConnectionStringBuilder(connectionString);
+                    using (SqlConnection conn = new SqlConnection(connectionString))
+                    {
+                        conn.Open();
+                        return (conn.State == ConnectionState.Open);
+                    }
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+
+            return false;
+        }
+
         private static ClientContext CreateContext(string contextUrl, ICredentials credentials)
         {
             ClientContext context;
-            if (!String.IsNullOrEmpty(Realm) && !String.IsNullOrEmpty(AppId) && !String.IsNullOrEmpty(AppSecret))
+            if (!String.IsNullOrEmpty(AppId) && !String.IsNullOrEmpty(AppSecret))
             {
                 AuthenticationManager am = new AuthenticationManager();
-                context = am.GetAppOnlyAuthenticatedContext(contextUrl, Realm, AppId, AppSecret); 
+                context = am.GetAppOnlyAuthenticatedContext(contextUrl, AppId, AppSecret);
             }
             else
             {
                 context = new ClientContext(contextUrl);
                 context.Credentials = credentials;
             }
+
+            context.RequestTimeout = Timeout.Infinite;
             return context;
         }
 
