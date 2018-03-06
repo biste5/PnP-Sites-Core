@@ -12,17 +12,16 @@ namespace OfficeDevPnP.Core.Tests.Framework.Functional
     public abstract class FunctionalTestBase
     {
         private static string sitecollectionNamePrefix = "TestPnPSC_12345_";
+
         internal static string centralSiteCollectionUrl = "";
         internal static string centralSubSiteUrl = "";
         internal const string centralSubSiteName = "sub";
         internal static bool debugMode = false;
-        internal static bool isNoScriptSite = false;
-
         internal string sitecollectionName = "";
 
         #region Test preparation
-        public static void ClassInitBase(TestContext context)
-        {
+        public static void ClassInitBase(TestContext context, bool noScriptSite = false)
+        {            
             // Drop all previously created site collections to keep the environment clean
             using (var tenantContext = TestCommon.CreateTenantClientContext())
             {
@@ -32,16 +31,19 @@ namespace OfficeDevPnP.Core.Tests.Framework.Functional
 
                     // Each class inheriting from this base class gets a central test site collection, so let's create that one
                     var tenant = new Tenant(tenantContext);
-                    centralSiteCollectionUrl = CreateTestSiteCollection(tenant, sitecollectionNamePrefix + Guid.NewGuid().ToString(), isNoScriptSite: isNoScriptSite);
+                    centralSiteCollectionUrl = CreateTestSiteCollection(tenant, sitecollectionNamePrefix + Guid.NewGuid().ToString());
 
                     // Add a default sub site
                     centralSubSiteUrl = CreateTestSubSite(tenant, centralSiteCollectionUrl, centralSubSiteName);
 
+#if !ONPREMISES                    
                     // Apply noscript setting
-                    if (isNoScriptSite)
+                    if (noScriptSite)
                     {
+                        Console.WriteLine("Setting site {0} as NoScript", centralSiteCollectionUrl);
                         tenant.SetSiteProperties(centralSiteCollectionUrl, noScriptSite: true);
                     }
+#endif
                 }
             }
         }
@@ -76,11 +78,11 @@ namespace OfficeDevPnP.Core.Tests.Framework.Functional
             sitecollectionName = sitecollectionNamePrefix + Guid.NewGuid().ToString();
         }
 
-        #endregion
+#endregion
 
-        #region Helper methods
+#region Helper methods
 #if !ONPREMISES
-        internal static string CreateTestSiteCollection(Tenant tenant, string sitecollectionName, bool isNoScriptSite = false)
+        internal static string CreateTestSiteCollection(Tenant tenant, string sitecollectionName)
         {
             try
             {
@@ -111,16 +113,11 @@ namespace OfficeDevPnP.Core.Tests.Framework.Functional
 
                 tenant.CreateSiteCollection(siteToCreate, false, true);
 
-                //if (isNoScriptSite)
-                //{
-                //    tenant.SetSiteProperties(siteToCreateUrl, noScriptSite: true);
-                //}
-
                 return siteToCreateUrl;
             }
             catch (Exception ex)
             {
-                Console.WriteLine(ex.ToDetailedString());
+                Console.WriteLine(ex.ToDetailedString(tenant.Context));
                 throw;
             }
         }
@@ -129,40 +126,50 @@ namespace OfficeDevPnP.Core.Tests.Framework.Functional
         {
             var tenant = new Tenant(tenantContext);
 
-            var siteCols = tenant.GetSiteCollections();
-
-            foreach (var siteCol in siteCols)
+            try
             {
-                if (siteCol.Url.Contains(sitecollectionNamePrefix))
-                {
-                    try
-                    {
-                        // Drop the site collection from the recycle bin
-                        if (tenant.CheckIfSiteExists(siteCol.Url, "Recycled"))
-                        {
-                            tenant.DeleteSiteCollectionFromRecycleBin(siteCol.Url, false);
-                        }
-                        else
-                        {
-                            // Eat the exceptions: would occur if the site collection is already in the recycle bin.
-                            try
-                            {
-                                // ensure the site collection in unlocked state before deleting
-                                tenant.SetSiteLockState(siteCol.Url, SiteLockState.Unlock);
-                            }
-                            catch { }
+                var siteCols = tenant.GetSiteCollections();
 
-                            // delete the site collection, do not use the recyle bin
-                            tenant.DeleteSiteCollection(siteCol.Url, false);
-                        }
-                    }
-                    catch (Exception ex)
+                foreach (var siteCol in siteCols)
+                {
+                    if (siteCol.Url.Contains(sitecollectionNamePrefix))
                     {
-                        // eat all exceptions
-                        Console.WriteLine(ex.ToDetailedString());
+                        try
+                        {
+                            // Drop the site collection from the recycle bin
+                            if (tenant.CheckIfSiteExists(siteCol.Url, "Recycled"))
+                            {
+                                tenant.DeleteSiteCollectionFromRecycleBin(siteCol.Url, false);
+                            }
+                            else
+                            {
+                                // Eat the exceptions: would occur if the site collection is already in the recycle bin.
+                                try
+                                {
+                                    // ensure the site collection in unlocked state before deleting
+                                    tenant.SetSiteLockState(siteCol.Url, SiteLockState.Unlock);
+                                }
+                                catch { }
+
+                                // delete the site collection, do not use the recyle bin
+                                tenant.DeleteSiteCollection(siteCol.Url, false);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            // eat all exceptions
+                            Console.WriteLine(ex.ToDetailedString(tenant.Context));
+                        }
                     }
                 }
             }
+            // catch exceptions with the GetSiteCollections call and log them so we can grab the corelation ID
+            catch (Exception ex)
+            {
+                Console.WriteLine(ex.ToDetailedString(tenant.Context));
+                throw;
+            }
+
         }
 
         internal static string CreateTestSubSite(Tenant tenant, string sitecollectionUrl, string subSiteName)
@@ -308,7 +315,7 @@ namespace OfficeDevPnP.Core.Tests.Framework.Functional
 
             return string.Format("{0}{1}/{2}", host, path, siteCollection);
         }
-        #endregion
+#endregion
 
     }
 }

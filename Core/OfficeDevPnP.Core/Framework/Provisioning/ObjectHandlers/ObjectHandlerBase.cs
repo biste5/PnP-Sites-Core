@@ -28,7 +28,7 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
 
         public ProvisioningMessagesDelegate MessagesDelegate { get; set; }
 
-        public abstract bool WillProvision(Web web, ProvisioningTemplate template);
+        public abstract bool WillProvision(Web web, ProvisioningTemplate template, ProvisioningTemplateApplyingInformation applyingInformation);
 
         public abstract bool WillExtract(Web web, ProvisioningTemplate template, ProvisioningTemplateCreationInformation creationInfo);
 
@@ -36,7 +36,7 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
 
         public abstract ProvisioningTemplate ExtractObjects(Web web, ProvisioningTemplate template, ProvisioningTemplateCreationInformation creationInfo);
 
-        internal void WriteWarning(string message, ProvisioningMessageType messageType)
+        internal void WriteMessage(string message, ProvisioningMessageType messageType)
         {
             if (MessagesDelegate != null)
             {

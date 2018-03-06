@@ -40,11 +40,15 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
                 var existingFieldIds = existingFields.AsEnumerable<SPField>().Select(l => l.Id).ToList();
                 var fields = template.SiteFields;
 
+                var currentFieldIndex = 0;
                 foreach (var field in fields)
                 {
-                    XElement templateFieldElement = XElement.Parse(parser.ParseString(field.SchemaXml, "~sitecollection", "~site"));
-                    var fieldId = templateFieldElement.Attribute("ID").Value;
+                    currentFieldIndex++;
 
+                    XElement templateFieldElement = XElement.Parse(parser.ParseXmlString(field.SchemaXml, "~sitecollection", "~site"));
+                    var fieldId = templateFieldElement.Attribute("ID").Value;
+                    var fieldInternalName = templateFieldElement.Attribute("InternalName") != null ? templateFieldElement.Attribute("InternalName").Value : "";
+                    WriteMessage($"Field|{(!string.IsNullOrWhiteSpace(fieldInternalName) ? fieldInternalName : fieldId)}|{currentFieldIndex}|{fields.Count}", ProvisioningMessageType.Progress);
                     if (!existingFieldIds.Contains(Guid.Parse(fieldId)))
                     {
                         try
@@ -71,6 +75,7 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
                         }
                 }
             }
+            WriteMessage($"Done processing fields", ProvisioningMessageType.Completed);
             return parser;
         }
 
@@ -88,16 +93,16 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
             {
                 if (existingFieldElement.Attribute("Type").Value == templateFieldElement.Attribute("Type").Value) // Is existing field of the same type?
                 {
-                    if (IsFieldXmlValid(parser.ParseString(originalFieldXml), parser, web.Context))
+                    var listIdentifier = templateFieldElement.Attribute("List") != null ? templateFieldElement.Attribute("List").Value : null;
+
+                    if (listIdentifier != null)
                     {
-                        var listIdentifier = templateFieldElement.Attribute("List") != null ? templateFieldElement.Attribute("List").Value : null;
+                        // Temporary remove list attribute from list
+                        templateFieldElement.Attribute("List").Remove();
+                    }
 
-                        if (listIdentifier != null)
-                        {
-                            // Temporary remove list attribute from list
-                            templateFieldElement.Attribute("List").Remove();
-                        }
-
+                    if (IsFieldXmlValid(parser.ParseXmlString(originalFieldXml), parser, web.Context))
+                    {
                         foreach (var attribute in templateFieldElement.Attributes())
                         {
                             if (existingFieldElement.Attribute(attribute.Name) != null)
@@ -131,10 +136,27 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
                         {
                             existingFieldElement.Attributes("Version").Remove();
                         }
-                        existingField.SchemaXml = parser.ParseString(existingFieldElement.ToString(), "~sitecollection", "~site");
+                        existingField.SchemaXml = parser.ParseXmlString(existingFieldElement.ToString(), "~sitecollection", "~site");
                         existingField.UpdateAndPushChanges(true);
                         web.Context.Load(existingField, f => f.TypeAsString, f => f.DefaultValue);
-                        web.Context.ExecuteQueryRetry();
+                        try
+                        {
+                            web.Context.ExecuteQueryRetry();
+                        }
+                        catch (ServerException se)
+                        {
+                            if (se.ServerErrorTypeName == "Microsoft.SharePoint.Client.ClientServiceTimeoutException")
+                            {
+                                string fieldName = existingFieldElement.Attribute("Name") != null ? existingFieldElement.Attribute("Name").Value : existingFieldElement.Attribute("StaticName").Value;
+                                WriteMessage(string.Format(CoreResources.Provisioning_ObjectHandlers_Fields_Updating_field__0__timeout, fieldName), ProvisioningMessageType.Warning);
+                                scope.LogWarning(CoreResources.Provisioning_ObjectHandlers_Fields_Updating_field__0__timeout, fieldName);
+
+                                web.Context.Load(existingField, f => f.TypeAsString, f => f.DefaultValue);
+                                web.Context.ExecuteQueryRetry();
+                            }
+                            else
+                                throw;
+                        }
 
                         bool isDirty = false;
 #if !SP2013
@@ -160,10 +182,14 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
                             existingField.Update();
                             web.Context.ExecuteQueryRetry();
                         }
-                        if ((existingField.TypeAsString == "TaxonomyFieldType" || existingField.TypeAsString == "TaxonomyFieldTypeMulti") && !string.IsNullOrEmpty(existingField.DefaultValue))
+                        if ((existingField.TypeAsString == "TaxonomyFieldType" || existingField.TypeAsString == "TaxonomyFieldTypeMulti"))
                         {
                             var taxField = web.Context.CastTo<TaxonomyField>(existingField);
-                            ValidateTaxonomyFieldDefaultValue(taxField);
+                            if (!string.IsNullOrEmpty(existingField.DefaultValue))
+                            {
+                                ValidateTaxonomyFieldDefaultValue(taxField);
+                            }
+                            SetTaxonomyFieldOpenValue(taxField, originalFieldXml);
                         }
                     }
                     else
@@ -177,7 +203,7 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
                 else
                 {
                     var fieldName = existingFieldElement.Attribute("Name") != null ? existingFieldElement.Attribute("Name").Value : existingFieldElement.Attribute("StaticName").Value;
-                    WriteWarning(string.Format(CoreResources.Provisioning_ObjectHandlers_Fields_Field__0____1___exists_but_is_of_different_type__Skipping_field_, fieldName, fieldId), ProvisioningMessageType.Warning);
+                    WriteMessage(string.Format(CoreResources.Provisioning_ObjectHandlers_Fields_Field__0____1___exists_but_is_of_different_type__Skipping_field_, fieldName, fieldId), ProvisioningMessageType.Warning);
                     scope.LogWarning(CoreResources.Provisioning_ObjectHandlers_Fields_Field__0____1___exists_but_is_of_different_type__Skipping_field_, fieldName, fieldId);
 
                 }
@@ -221,11 +247,33 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
             return schemaElement.ToString();
         }
 
+        /// <summary>
+        /// Replace Field Internal name by Display Name in the Validation formula
+        /// (due to a SP issue that when provisioning the field, is expecting the Display name)
+        /// https://github.com/SharePoint/PnP-Sites-Core/issues/849
+        /// </summary>
+        /// <param name="field"></param>
+        /// <param name="schemaXml"></param>
+        /// <returns></returns>
+        internal static string TokenizeFieldValidationFormula(SPField field, string schemaXml)
+        {
+            var schemaElement = XElement.Parse(field.SchemaXml);
+
+            var validationNode = schemaElement.Elements("Validation").FirstOrDefault();
+            if (validationNode != null)
+            {
+                var validationNodeValue = validationNode.Value;
+                validationNode.Value = validationNodeValue.Replace(field.InternalName, string.Format("[{0}]", field.Title));
+            }
+
+            return schemaElement.ToString();
+        }
+
         private string ParseFieldSchema(string schemaXml, ListCollection lists)
         {
             foreach (var list in lists)
             {
-                schemaXml = Regex.Replace(schemaXml, list.Id.ToString(), $"{{listid:{list.Title}}}", RegexOptions.IgnoreCase);
+                schemaXml = Regex.Replace(schemaXml, list.Id.ToString(), $"{{listid:{System.Security.SecurityElement.Escape(list.Title)}}}", RegexOptions.IgnoreCase);
             }
 
             return schemaXml;
@@ -241,7 +289,7 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
                 templateFieldElement.Attribute("List").Remove();
             }
 
-            var fieldXml = parser.ParseString(templateFieldElement.ToString(), "~sitecollection", "~site");
+            var fieldXml = parser.ParseXmlString(templateFieldElement.ToString(), "~sitecollection", "~site");
 
             if (IsFieldXmlValid(fieldXml, parser, web.Context))
             {
@@ -277,10 +325,14 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
                     web.Context.ExecuteQueryRetry();
                 }
 
-                if ((field.TypeAsString == "TaxonomyFieldType" || field.TypeAsString == "TaxonomyFieldTypeMulti") && !string.IsNullOrEmpty(field.DefaultValue))
+                if ((field.TypeAsString == "TaxonomyFieldType" || field.TypeAsString == "TaxonomyFieldTypeMulti"))
                 {
                     var taxField = web.Context.CastTo<TaxonomyField>(field);
-                    ValidateTaxonomyFieldDefaultValue(taxField);
+                    if (!string.IsNullOrEmpty(field.DefaultValue))
+                    {
+                        ValidateTaxonomyFieldDefaultValue(taxField);
+                    }
+                    SetTaxonomyFieldOpenValue(taxField, originalFieldXml);
                 }
 
             }
@@ -293,7 +345,18 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
             }
         }
 
-       
+        private static void SetTaxonomyFieldOpenValue(TaxonomyField field, string taxonomyFieldXml)
+        {
+            bool openValue;
+            var taxonomyFieldElement = XElement.Parse(taxonomyFieldXml);
+            var openAttributeValue = taxonomyFieldElement.Attribute("Open") != null ? taxonomyFieldElement.Attribute("Open").Value : "";
+            if (bool.TryParse(openAttributeValue, out openValue))
+            {
+                field.Open = openValue;
+                field.UpdateAndPushChanges(true);
+                field.Context.ExecuteQueryRetry();
+            }
+        }
 
         private static void ValidateTaxonomyFieldDefaultValue(TaxonomyField field)
         {
@@ -396,8 +459,12 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
                 var taxTextFieldsToMoveUp = new List<Guid>();
                 var calculatedFieldsToMoveDown = new List<Guid>();
 
+                var currentFieldIndex = 0;
+                var fieldsToProcessCount = existingFields.Count;
                 foreach (var field in existingFields)
                 {
+                    currentFieldIndex++;
+                    WriteMessage($"Field|{field.InternalName}|{currentFieldIndex}|{fieldsToProcessCount}", ProvisioningMessageType.Progress);
                     if (!BuiltInFieldId.Contains(field.Id))
                     {
                         var fieldXml = field.SchemaXml;
@@ -407,7 +474,7 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
                         var listIdentifier = element.Attribute("List") != null ? element.Attribute("List").Value : null;
                         if (!string.IsNullOrEmpty(listIdentifier))
                         {
-                            var listGuid = Guid.Empty;
+                            //var listGuid = Guid.Empty;
                             fieldXml = ParseFieldSchema(fieldXml, web.Lists);
                             element = XElement.Parse(fieldXml);
                             //if (Guid.TryParse(listIdentifier, out listGuid))
@@ -425,7 +492,7 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
                             //}
                             //}
                         }
-                        
+
                         // Check if the field is of type TaxonomyField
                         if (field.TypeAsString.StartsWith("TaxonomyField"))
                         {
@@ -507,6 +574,8 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
                     template = CleanupEntities(template, creationInfo.BaseTemplate);
                 }
             }
+            WriteMessage($"Done processing fields", ProvisioningMessageType.Completed);
+
             return template;
         }
 
@@ -531,7 +600,7 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
             return template;
         }
 
-        public override bool WillProvision(Web web, ProvisioningTemplate template)
+        public override bool WillProvision(Web web, ProvisioningTemplate template, ProvisioningTemplateApplyingInformation applyingInformation)
         {
             if (!_willProvision.HasValue)
             {
@@ -547,7 +616,7 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
                 _willExtract = true;
             }
             return _willExtract.Value;
-        }
+        }        
     }
 
     internal static class XElementStringExtensions

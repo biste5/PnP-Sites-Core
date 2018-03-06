@@ -11,6 +11,7 @@ namespace OfficeDevPnP.Core.Tests.Framework.Functional.Implementation
 {
     internal class LocalizationImplementation : ImplementationBase
     {
+#if !SP2013
         internal void SiteCollectionsLocalization(string url)
         {
             using (var cc = TestCommon.CreateClientContext(url))
@@ -18,6 +19,7 @@ namespace OfficeDevPnP.Core.Tests.Framework.Functional.Implementation
                 CleanUpTestData(cc);
 
                 ProvisioningTemplateCreationInformation ptci = new ProvisioningTemplateCreationInformation(cc.Web);
+                ptci.BaseTemplate = null;
                 ptci.PersistMultiLanguageResources = true;
                 ptci.FileConnector = new FileSystemConnector(string.Format(@"{0}\..\..\Framework\Functional", AppDomain.CurrentDomain.BaseDirectory), "Templates");
                 ptci.HandlersToProcess = Handlers.Fields | Handlers.ContentTypes | Handlers.Lists | Handlers.SupportedUILanguages | Handlers.CustomActions | Handlers.Pages | Handlers.Files | Handlers.Navigation;
@@ -36,6 +38,7 @@ namespace OfficeDevPnP.Core.Tests.Framework.Functional.Implementation
                 CleanUpTestData(cc);
 
                 ProvisioningTemplateCreationInformation ptci = new ProvisioningTemplateCreationInformation(cc.Web);
+                ptci.BaseTemplate = null;
                 ptci.PersistMultiLanguageResources = true;
                 ptci.FileConnector = new FileSystemConnector(string.Format(@"{0}\..\..\Framework\Functional", AppDomain.CurrentDomain.BaseDirectory), "Templates");
                 ptci.HandlersToProcess = Handlers.Fields | Handlers.ContentTypes | Handlers.Lists | Handlers.SupportedUILanguages | Handlers.CustomActions | Handlers.Pages | Handlers.Files;
@@ -47,7 +50,7 @@ namespace OfficeDevPnP.Core.Tests.Framework.Functional.Implementation
         }
 
 
-        #region Helper methods
+#region Helper methods
         private void CleanUpTestData(ClientContext cc)
         {
             DeleteLists(cc);
@@ -168,7 +171,9 @@ namespace OfficeDevPnP.Core.Tests.Framework.Functional.Implementation
                 }
             }
         }
-        #endregion
+#endregion
+
+#endif
 
     }
 }
